@@ -4,6 +4,8 @@ A self-hosted streaming setup on macOS using [Plex](https://www.plex.tv/), [NzbD
 
 Add a show to your **Plex Watchlist** and within ~5 seconds the watchdog syncs it to Sonarr, auto-detects anime, and searches episodes one-by-one so the first episode is available as fast as possible.
 
+> 📚 **Full documentation lives in the [wiki](../../wiki)** — setup, every watchdog handler, CLI tools, troubleshooting, and known limitations. This README covers the fast path; the wiki covers everything else.
+
 ## Architecture
 
 ```mermaid
@@ -236,10 +238,14 @@ docker compose pull && docker compose up -d  # Update images (or let Watchtower 
 
 ## Documentation
 
-Detailed documentation lives in the [wiki](../../wiki):
+**Start here → [SlothServ Wiki](../../wiki)**
 
-- **[Service Configuration](../../wiki/Service-Configuration)** — Sonarr, Radarr, NzbDAV, Plex, Rclone, Bazarr, Tautulli
-- **[Watchdog Daemon](../../wiki/Watchdog-Daemon)** — All handlers, constants, logging, launchd
-- **[CLI Tools](../../wiki/CLI-Tools)** — status, episode-search, retry-failed, up, down
-- **[Troubleshooting](../../wiki/Troubleshooting)** — Common issues and fixes
-- **[Known Limitations](../../wiki/Known-Limitations)** — SQLite on virtiofs, Mac sleep, anime naming quirks
+The wiki is the source of truth for anything beyond the fast path:
+
+| Page | What's in it |
+|------|---------------|
+| **[Service Configuration](../../wiki/Service-Configuration)** | Colima tuning, `.env` vars, Sonarr/Radarr quality profiles + custom formats, NzbDAV, Plex `Preferences.xml`, Rclone flags, Caddy reverse proxy, optional Gluetun VPN |
+| **[Watchdog Daemon](../../wiki/Watchdog-Daemon)** | Every handler in execution order, isolated per-step error handling, all 5s / 1h / 4h / 6h intervals, key constants, logging, launchd plist |
+| **[CLI Tools](../../wiki/CLI-Tools)** | `mstatus`, `msearch`, `mretry`, `mup`, `mdown`, and what each one does under the hood |
+| **[Troubleshooting](../../wiki/Troubleshooting)** | Relayed Plex streams, empty rclone mount, database corruption, `*.home.arpa` resolution, Colima port forwarding |
+| **[Known Limitations](../../wiki/Known-Limitations)** | SQLite on virtiofs, Mac sleep, anime naming quirks, Plex LAN IP changes |
