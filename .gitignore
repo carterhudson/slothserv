@@ -1,0 +1,14 @@
+# Runtime data
+config/
+data/
+mnt/
+logs/
+backups/
+
+# Secrets
+.env
+rclone.conf
+slothserv-config.json
+
+# OS
+.DS_Store

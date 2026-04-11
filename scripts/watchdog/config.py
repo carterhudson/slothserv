@@ -1,0 +1,88 @@
+"""
+Shared configuration, constants, mutable state, and logging setup.
+
+Other modules import this module (not individual names) so mutations
+to module-level variables are visible everywhere:
+
+    from watchdog import config
+    config.sonarr_url = "http://..."
+"""
+
+import logging
+import logging.handlers
+import os
+import xml.etree.ElementTree as ET
+from pathlib import Path
+
+# ─── Paths ────────────────────────────────────────────────────────────
+
+BASE_DIR = Path(__file__).resolve().parent.parent.parent   # media-server/
+LOG_DIR = BASE_DIR / "logs"
+
+# ─── Constants ────────────────────────────────────────────────────────
+
+CHECK_INTERVAL = 5
+EPISODE_SEARCH_DELAY = 2
+
+ANIME_ROOT = "/data/media/anime"
+TV_ROOT = "/data/media/tv"
+ANIME_QUALITY_PROFILE_ID = 8
+TV_QUALITY_PROFILE_ID = 7
+
+MISSING_SWEEP_INTERVAL = 6 * 3600
+BLOCKLIST_HYGIENE_INTERVAL = 4 * 3600
+SYMLINK_RECONCILE_INTERVAL = 4 * 3600
+TRUNCATION_CHECK_INTERVAL = 6 * 3600
+TRUNCATION_THRESHOLD = 0.6
+HEALTH_CHECK_INTERVAL = 3600
+VPN_CHECK_INTERVAL = 60
+VPN_UNHEALTHY_THRESHOLD = 3
+
+COLIMA_BIN = "/opt/homebrew/bin/colima"
+BREW_ENV = {**os.environ, "PATH": "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"}
+
+# ─── Mutable state (written by load_api_keys / init_service_urls) ─────
+
+sonarr_url = "http://localhost:8989"
+radarr_url = "http://localhost:7878"
+plex_url = "http://localhost:32400"
+sonarr_api_key = ""
+radarr_api_key = ""
+plex_token = ""
+
+force_health_check = False
+
+# ─── Logger ───────────────────────────────────────────────────────────
+
+logger = logging.getLogger("watchdog")
+
+
+def setup_logging():
+    LOG_DIR.mkdir(exist_ok=True)
+    handler = logging.handlers.RotatingFileHandler(
+        LOG_DIR / "watchdog.log", maxBytes=5_000_000, backupCount=3
+    )
+    handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
+    logger.addHandler(handler)
+    logger.addHandler(logging.StreamHandler())
+    logger.setLevel(logging.INFO)
+
+
+def load_api_keys():
+    global sonarr_api_key, radarr_api_key, plex_token
+
+    tree = ET.parse(str(BASE_DIR / "config/sonarr/config.xml"))
+    sonarr_api_key = tree.find("ApiKey").text
+
+    try:
+        radarr_tree = ET.parse(str(BASE_DIR / "config/radarr/config.xml"))
+        radarr_api_key = radarr_tree.find("ApiKey").text
+    except Exception:
+        logger.warning("Could not read Radarr API key — Radarr integration disabled")
+
+    prefs_path = BASE_DIR / "config/plex/Library/Application Support/Plex Media Server/Preferences.xml"
+    try:
+        plex_tree = ET.parse(str(prefs_path))
+        plex_token = plex_tree.getroot().get("PlexOnlineToken", "")
+    except Exception:
+        logger.warning("Could not read Plex token — session monitoring disabled")

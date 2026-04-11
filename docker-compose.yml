@@ -1,0 +1,203 @@
+services:
+  plex:
+    image: lscr.io/linuxserver/plex:latest
+    container_name: plex
+    environment:
+      - PUID=${PUID}
+      - PGID=${PGID}
+      - TZ=${TZ}
+      - PLEX_CLAIM=${PLEX_CLAIM}
+      - VERSION=docker
+    volumes:
+      - ./config/plex:/config
+      - ${MEDIA_ROOT}/media/tv:/tv
+      - ${MEDIA_ROOT}/media/movies:/movies
+      - ${MEDIA_ROOT}/media/anime:/anime
+      - ./mnt:/mnt:rshared
+    ports:
+      - ${PLEX_PORT}:32400
+    restart: unless-stopped
+    depends_on:
+      nzbdav_rclone:
+        condition: service_started
+
+  nzbdav:
+    image: nzbdav/nzbdav:alpha
+    container_name: nzbdav
+    healthcheck:
+      test: curl -f http://localhost:3000/health || exit 1
+      interval: 1m
+      retries: 3
+      start_period: 5s
+      timeout: 5s
+    environment:
+      - PUID=${PUID}
+      - PGID=${PGID}
+    volumes:
+      - nzbdav_config:/config
+      - ./mnt:/mnt
+      - ${MEDIA_ROOT}/media:/data/media
+    ports:
+      - ${NZBDAV_PORT}:3000
+    restart: unless-stopped
+
+  nzbdav_rclone:
+    image: rclone/rclone:latest
+    container_name: nzbdav_rclone
+    restart: unless-stopped
+    environment:
+      - PUID=${PUID}
+      - PGID=${PGID}
+      - TZ=${TZ}
+    volumes:
+      - ./mnt:/mnt:rshared
+      - ./rclone.conf:/config/rclone/rclone.conf
+    cap_add:
+      - SYS_ADMIN
+    security_opt:
+      - apparmor:unconfined
+    devices:
+      - /dev/fuse:/dev/fuse:rwm
+    depends_on:
+      nzbdav:
+        condition: service_healthy
+        restart: true
+    command: >
+      mount nzbdav: /mnt/remote/nzbdav
+        --contimeout=30s
+        --uid=${PUID}
+        --gid=${PGID}
+        --allow-other
+        --links
+        --use-cookies
+        --vfs-cache-mode=full
+        --vfs-cache-max-size=20G
+        --vfs-cache-max-age=24h
+        --buffer-size=0M
+        --vfs-read-ahead=512M
+        --dir-cache-time=20s
+
+  sonarr:
+    image: lscr.io/linuxserver/sonarr:latest
+    container_name: sonarr
+    environment:
+      - PUID=${PUID}
+      - PGID=${PGID}
+      - TZ=${TZ}
+    volumes:
+      - ./config/sonarr:/config
+      - ${MEDIA_ROOT}:/data
+      - ./mnt:/mnt:rshared
+    ports:
+      - ${SONARR_PORT}:8989
+    restart: unless-stopped
+    depends_on:
+      nzbdav_rclone:
+        condition: service_started
+
+  radarr:
+    image: lscr.io/linuxserver/radarr:latest
+    container_name: radarr
+    environment:
+      - PUID=${PUID}
+      - PGID=${PGID}
+      - TZ=${TZ}
+    volumes:
+      - ./config/radarr:/config
+      - ${MEDIA_ROOT}:/data
+      - ./mnt:/mnt:rshared
+    ports:
+      - ${RADARR_PORT}:7878
+    restart: unless-stopped
+    depends_on:
+      nzbdav_rclone:
+        condition: service_started
+
+  bazarr:
+    image: lscr.io/linuxserver/bazarr:latest
+    container_name: bazarr
+    environment:
+      - PUID=${PUID}
+      - PGID=${PGID}
+      - TZ=${TZ}
+    volumes:
+      - ./config/bazarr:/config
+      - ${MEDIA_ROOT}:/data
+      - ./mnt:/mnt:rshared
+    ports:
+      - ${BAZARR_PORT}:6767
+    restart: unless-stopped
+    depends_on:
+      - sonarr
+      - radarr
+
+  tautulli:
+    image: lscr.io/linuxserver/tautulli:latest
+    container_name: tautulli
+    environment:
+      - PUID=${PUID}
+      - PGID=${PGID}
+      - TZ=${TZ}
+    volumes:
+      - ./config/tautulli:/config
+    ports:
+      - ${TAUTULLI_PORT}:8181
+    restart: unless-stopped
+    depends_on:
+      - plex
+
+  recyclarr:
+    image: ghcr.io/recyclarr/recyclarr:latest
+    container_name: recyclarr
+    environment:
+      - TZ=${TZ}
+    volumes:
+      - ./config/recyclarr:/config
+    restart: unless-stopped
+
+  watchtower:
+    image: containrrr/watchtower:latest
+    container_name: watchtower
+    environment:
+      - TZ=${TZ}
+      - DOCKER_API_VERSION=1.44
+      - WATCHTOWER_CLEANUP=true
+      - WATCHTOWER_SCHEDULE=0 0 4 * * 1
+      - WATCHTOWER_INCLUDE_STOPPED=false
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    restart: unless-stopped
+
+  seerr:
+    image: ghcr.io/seerr-team/seerr:latest
+    container_name: seerr
+    init: true
+    environment:
+      - TZ=${TZ}
+    volumes:
+      - ./config/overseerr:/app/config
+    ports:
+      - ${OVERSEERR_PORT}:5055
+    restart: unless-stopped
+    depends_on:
+      - plex
+      - sonarr
+      - radarr
+
+  caddy:
+    image: caddy:2-alpine
+    container_name: caddy
+    restart: unless-stopped
+    ports:
+      - "80:80"
+    volumes:
+      - ./config/caddy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+
+volumes:
+  nzbdav_config:
+    external: true
+    name: media-server_nzbdav_config
+  caddy_data:
+  caddy_config:
