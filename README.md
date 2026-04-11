@@ -1,6 +1,6 @@
 # SlothServ — Self-Hosted Media Server
 
-A self-hosted streaming setup on macOS using [Plex](https://www.plex.tv/), [NzbDAV](https://github.com/nzbdav/nzbdav), [Sonarr](https://sonarr.tv/), [Radarr](https://radarr.video/), and a custom watchdog daemon, running in [Docker](https://docs.docker.com/get-started/overview/) via [Colima](https://github.com/abiosoft/colima).
+A self-hosted Usenet streaming setup on macOS using [Plex](https://www.plex.tv/), [NzbDAV](https://github.com/nzbdav/nzbdav), [Sonarr](https://sonarr.tv/), [Radarr](https://radarr.video/), and a custom watchdog daemon, running in [Docker](https://docs.docker.com/get-started/overview/) via [Colima](https://github.com/abiosoft/colima).
 
 Add a show to your **Plex Watchlist** and within ~5 seconds the watchdog syncs it to Sonarr, auto-detects anime, and searches episodes one-by-one so the first episode is available as fast as possible.
 
