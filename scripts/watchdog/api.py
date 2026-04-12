@@ -58,3 +58,19 @@ def plex(path):
     )
     with urllib.request.urlopen(req, timeout=15) as r:
         return json.loads(r.read())
+
+
+def plex_discover(path):
+    if not config.plex_token:
+        return None
+    req = urllib.request.Request(
+        f"https://discover.provider.plex.tv{path}",
+        headers={
+            "Accept": "application/json",
+            "X-Plex-Token": config.plex_token,
+            "X-Plex-Client-Identifier": "slothserv-watchdog",
+            "X-Plex-Product": "SlothServ",
+        },
+    )
+    with urllib.request.urlopen(req, timeout=30) as r:
+        return json.loads(r.read())

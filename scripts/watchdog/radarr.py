@@ -3,6 +3,7 @@ Radarr handlers: stuck imports, failed downloads.
 """
 
 import re
+import subprocess
 import time
 
 from watchdog import config
@@ -24,8 +25,60 @@ def _normalize_release_title(title):
     return _WS_RE.sub(" ", (title or "").strip().lower())
 
 
+_stuck_since: dict = {}
+
+
+def _probe_dead_download(item):
+    """Probe whether a stuck download's files are actually readable.
+    Returns True if the download was dead and has been handled."""
+    title = item.get("title", "?")[:60]
+    item_id = item["id"]
+    movie_id = item.get("movieId")
+    output_path = item.get("outputPath", "")
+
+    if not output_path:
+        return False
+
+    probe = subprocess.run(
+        ["docker", "exec", "radarr", "head", "-c", "1", output_path],
+        capture_output=True, text=True, timeout=15,
+    )
+
+    if probe.returncode == 0:
+        return False
+
+    stderr = probe.stderr.lower()
+    if "i/o error" not in stderr and "no such file" not in stderr and "input/output error" not in stderr:
+        return False
+
+    log.info(f"Radarr dead download detected (I/O error): {title} — blocklisting and re-searching")
+
+    try:
+        api("DELETE",
+            f"/api/v3/queue/{item_id}?removeFromClient=true&blocklist=true&skipRedownload=true")
+    except Exception as e:
+        log.error(f"  Failed to remove dead download {title}: {e}")
+        return False
+
+    if movie_id:
+        try:
+            time.sleep(config.EPISODE_SEARCH_DELAY)
+            api("POST", "/api/v3/command", {
+                "name": "MoviesSearch",
+                "movieIds": [movie_id],
+            })
+            log.info(f"  Re-searching movie {movie_id}")
+        except Exception as e:
+            log.error(f"  Re-search failed for movie {movie_id}: {e}")
+
+    return True
+
+
 def handle_stuck_imports():
-    """Auto-import stuck Radarr queue items with warnings."""
+    """Auto-import stuck Radarr queue items with warnings. Items stuck longer
+    than DEAD_DOWNLOAD_GRACE are probed for I/O errors (DMCA'd files)."""
+    global _stuck_since
+
     if not config.radarr_api_key:
         return
     try:
@@ -33,8 +86,14 @@ def handle_stuck_imports():
     except Exception:
         return
 
+    active_ids = set()
+
     for item in (queue or {}).get("records", []):
-        if item.get("trackedDownloadStatus") != "warning" or item.get("trackedDownloadState") != "importing":
+        if item.get("trackedDownloadStatus") != "warning":
+            continue
+        tracked_state = item.get("trackedDownloadState", "")
+        importable_states = {"importing", "importBlocked", "importPending"}
+        if tracked_state not in importable_states:
             continue
 
         title = item.get("title", "?")[:60]
@@ -42,6 +101,15 @@ def handle_stuck_imports():
         download_id = item.get("downloadId")
         if not movie_id or not download_id:
             continue
+
+        active_ids.add(download_id)
+        now = time.time()
+        first_seen = _stuck_since.setdefault(download_id, now)
+
+        if now - first_seen >= config.DEAD_DOWNLOAD_GRACE:
+            if _probe_dead_download(item):
+                _stuck_since.pop(download_id, None)
+                continue
 
         log.info(f"Radarr stuck import: {title}")
 
@@ -77,6 +145,7 @@ def handle_stuck_imports():
                     "files": files,
                 })
                 log.info(f"  Radarr auto-imported {len(files)} file(s): {(result or {}).get('status', '?')}")
+                _stuck_since.pop(download_id, None)
                 try:
                     movie_info = api("GET", f"/api/v3/movie/{movie_id}")
                     if movie_info and movie_info.get("path"):
@@ -87,6 +156,8 @@ def handle_stuck_imports():
                 log.warning(f"  No importable files for: {title}")
         except Exception as e:
             log.error(f"  Radarr import error for {title}: {e}")
+
+    _stuck_since = {k: v for k, v in _stuck_since.items() if k in active_ids}
 
 
 def handle_failed_downloads():

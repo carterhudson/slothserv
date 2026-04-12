@@ -29,6 +29,7 @@ from watchdog.sonarr import (
     blocklist_hygiene,
     sweep_missing_episodes,
     reconcile_anime_symlinks,
+    cleanup_stale_symlinks,
 )
 from watchdog import radarr
 from watchdog.plex import detect_truncated_episodes
@@ -73,6 +74,7 @@ def main():
         ("blocklist_hygiene", blocklist_hygiene),
         ("sweep_missing_episodes", sweep_missing_episodes),
         ("reconcile_anime_symlinks", reconcile_anime_symlinks),
+        ("cleanup_stale_symlinks", cleanup_stale_symlinks),
         ("detect_truncated_episodes", detect_truncated_episodes),
         ("check_article_health", check_article_health),
         ("backup_configs", backup_configs),

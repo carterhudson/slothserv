@@ -1,9 +1,7 @@
 """
-Health checks: database integrity auto-repair and import list staleness detection.
+Health checks: container liveness, database integrity, and import list staleness.
 """
 
-import json
-import re
 import shutil
 import sqlite3 as _sqlite3
 import subprocess
@@ -14,7 +12,7 @@ import urllib.request
 from pathlib import Path
 
 from watchdog import config
-from watchdog.api import sonarr as sonarr_api, radarr as radarr_api
+from watchdog.api import sonarr as sonarr_api, radarr as radarr_api, plex_discover as plex_discover_api
 
 log = config.logger
 
@@ -22,7 +20,7 @@ log = config.logger
 
 last_health_check = 0.0
 
-# Track when a normalized title was first seen as "missing from library"
+# Track when a GUID was first seen as "on watchlist but missing from library"
 # so we don't thrash the import list on items that Sonarr just hasn't
 # ingested yet.
 _missing_since: dict = {"sonarr": {}, "radarr": {}}
@@ -31,11 +29,8 @@ _missing_since: dict = {"sonarr": {}, "radarr": {}}
 # long. Gives ImportListSync time to pick it up on its own.
 IMPORT_LIST_RECREATE_DELAY = 4 * 3600
 
-_NORM_RE = re.compile(r"[^a-z0-9]+")
-
-
-def _normalize_title(title):
-    return _NORM_RE.sub("", (title or "").lower())
+CRITICAL_CONTAINERS = ["sonarr", "gluetun", "nzbdav_rclone", "sabnzbd"]
+OPTIONAL_CONTAINERS = ["radarr", "plex"]
 
 
 # ─── Public entry point ──────────────────────────────────────────────
@@ -43,8 +38,9 @@ def _normalize_title(title):
 def health_check():
     """
     Hourly health check (or on-demand after a 500 error) that catches:
-    1. Database corruption — detected by attempting Sonarr/Radarr API commands
-    2. Stale import lists — detected by comparing Plex Watchlist with *arr libraries
+    1. Containers not running
+    2. Database corruption
+    3. Stale import lists (watchlist items not making it into the library)
     """
     global last_health_check
     now = time.time()
@@ -53,13 +49,60 @@ def health_check():
     last_health_check = now
     config.force_health_check = False
 
-    log.info("Health check: testing DB integrity and import list health")
+    log.info("Health check: containers, DB integrity, import lists")
+
+    _check_containers()
 
     _test_and_repair_db("sonarr")
     if config.radarr_api_key:
         _test_and_repair_db("radarr")
 
     _verify_import_lists()
+
+
+# ─── Container liveness ─────────────────────────────────────────────
+
+def _check_containers():
+    """Verify critical containers are running; restart any that aren't."""
+    all_containers = CRITICAL_CONTAINERS + (
+        OPTIONAL_CONTAINERS if config.radarr_api_key else ["plex"]
+    )
+
+    for name in all_containers:
+        try:
+            result = subprocess.run(
+                ["docker", "inspect", "--format", "{{.State.Status}}", name],
+                capture_output=True, text=True, timeout=10, env=config.BREW_ENV,
+            )
+            status = result.stdout.strip()
+        except Exception:
+            status = "unknown"
+
+        if status == "running":
+            continue
+
+        if name in CRITICAL_CONTAINERS:
+            log.error(f"  Container '{name}' is {status} — attempting restart")
+        else:
+            log.warning(f"  Container '{name}' is {status} — attempting restart")
+
+        try:
+            subprocess.run(
+                ["docker", "compose", "up", "-d", name],
+                cwd=str(config.BASE_DIR), capture_output=True, timeout=60,
+                env=config.BREW_ENV,
+            )
+            time.sleep(10)
+            verify = subprocess.run(
+                ["docker", "inspect", "--format", "{{.State.Status}}", name],
+                capture_output=True, text=True, timeout=10, env=config.BREW_ENV,
+            )
+            if verify.stdout.strip() == "running":
+                log.info(f"  Container '{name}' restarted successfully")
+            else:
+                log.error(f"  Container '{name}' failed to restart")
+        except Exception as e:
+            log.error(f"  Failed to restart container '{name}': {e}")
 
 
 # ─── DB integrity ────────────────────────────────────────────────────
@@ -173,86 +216,87 @@ def _repair_database(service):
 
 def _verify_import_lists():
     """
-    Compare Plex Watchlist with Sonarr/Radarr libraries. For items that are
-    on the watchlist but not yet in the library, first trigger an
-    ImportListSync. Only if the same items remain missing past
-    IMPORT_LIST_RECREATE_DELAY do we delete and recreate the import list.
+    Compare Plex Watchlist (via GUID matching) with Sonarr/Radarr libraries.
+    Items on the watchlist but not in the library get an ImportListSync nudge.
+    If they remain missing past IMPORT_LIST_RECREATE_DELAY, the import list
+    is deleted and recreated with a fresh token.
     """
     if not config.plex_token:
         return
 
     try:
-        req = urllib.request.Request(
-            "https://discover.provider.plex.tv/library/sections/watchlist/all"
-            f"?X-Plex-Token={config.plex_token}",
-            headers={"Accept": "application/json"},
-        )
-        with urllib.request.urlopen(req, timeout=15) as r:
-            data = json.loads(r.read())
-        watchlist = data.get("MediaContainer", {}).get("Metadata", [])
+        data = plex_discover_api("/library/sections/watchlist/all")
     except Exception as e:
         log.debug(f"  Could not fetch Plex Watchlist: {e}")
         return
 
-    if not watchlist:
+    if not data:
+        return
+
+    items = (data.get("MediaContainer") or {}).get("Metadata") or []
+    if not items:
         log.info("  Plex Watchlist empty — nothing to verify")
         _missing_since["sonarr"].clear()
         _missing_since["radarr"].clear()
         return
 
-    watchlist_shows = {
-        _normalize_title(item["title"]): item["title"]
-        for item in watchlist if item.get("type") == "show"
-    }
-    watchlist_movies = {
-        _normalize_title(item["title"]): item["title"]
-        for item in watchlist if item.get("type") == "movie"
-    }
+    watchlist_tvdb: dict = {}
+    watchlist_tmdb: dict = {}
 
-    if watchlist_shows:
-        _verify_service("sonarr", watchlist_shows)
-    if watchlist_movies and config.radarr_api_key:
-        _verify_service("radarr", watchlist_movies)
+    for item in items:
+        title = item.get("title", "?")
+        for guid in item.get("Guid") or []:
+            gid = guid.get("id", "")
+            if gid.startswith("tvdb://"):
+                try:
+                    watchlist_tvdb[int(gid[7:])] = title
+                except ValueError:
+                    pass
+            elif gid.startswith("tmdb://"):
+                try:
+                    watchlist_tmdb[int(gid[7:])] = title
+                except ValueError:
+                    pass
+
+    if watchlist_tvdb:
+        _verify_service_guids("sonarr", watchlist_tvdb, "tvdbId")
+    if watchlist_tmdb and config.radarr_api_key:
+        _verify_service_guids("radarr", watchlist_tmdb, "tmdbId")
 
 
-def _verify_service(service, watchlist_titles):
+def _verify_service_guids(service, watchlist_ids, id_field):
     """
-    watchlist_titles: {normalized_title: original_title}
+    watchlist_ids: {external_id: title}
+    id_field: "tvdbId" or "tmdbId"
     """
     call = sonarr_api if service == "sonarr" else radarr_api
     endpoint = "/api/v3/series" if service == "sonarr" else "/api/v3/movie"
 
     try:
-        items = call("GET", endpoint) or []
+        library = call("GET", endpoint) or []
     except Exception as e:
         log.error(f"  {service} library fetch failed: {e}")
         return
 
-    library_titles = set()
-    for it in items:
-        library_titles.add(_normalize_title(it["title"]))
-        for alt in it.get("alternateTitles", []) or []:
-            library_titles.add(_normalize_title(alt["title"]))
+    library_ids = {item.get(id_field) for item in library if item.get(id_field)}
+    missing_ids = {eid: title for eid, title in watchlist_ids.items() if eid not in library_ids}
 
-    missing_norm = set(watchlist_titles.keys()) - library_titles
     now = time.time()
     tracked = _missing_since[service]
 
-    # Clear tracking for items no longer missing.
-    for n in list(tracked.keys()):
-        if n not in missing_norm:
-            del tracked[n]
+    for eid in list(tracked.keys()):
+        if eid not in missing_ids:
+            del tracked[eid]
 
-    if not missing_norm:
-        log.info(f"  {service} import list OK — all watchlist items present")
+    if not missing_ids:
         return
 
-    for n in missing_norm:
-        tracked.setdefault(n, now)
+    for eid in missing_ids:
+        tracked.setdefault(eid, now)
 
-    persistent = [n for n, t in tracked.items() if now - t >= IMPORT_LIST_RECREATE_DELAY]
+    persistent = [eid for eid, t in tracked.items() if now - t >= IMPORT_LIST_RECREATE_DELAY]
     if persistent:
-        persistent_titles = sorted(watchlist_titles[n] for n in persistent if n in watchlist_titles)
+        persistent_titles = sorted(missing_ids[eid] for eid in persistent if eid in missing_ids)
         hours = IMPORT_LIST_RECREATE_DELAY // 3600
         log.warning(
             f"  {service}: {len(persistent_titles)} watchlist item(s) missing >{hours}h: "
@@ -261,7 +305,7 @@ def _verify_service(service, watchlist_titles):
         _recreate_import_list(service)
         tracked.clear()
     else:
-        missing_titles = sorted(watchlist_titles[n] for n in missing_norm if n in watchlist_titles)
+        missing_titles = sorted(missing_ids.values())
         log.info(
             f"  {service}: {len(missing_titles)} watchlist item(s) not yet imported — "
             f"triggering ImportListSync: {', '.join(missing_titles[:5])}"

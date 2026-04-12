@@ -12,7 +12,7 @@ import urllib.error
 from datetime import datetime, timezone
 
 from watchdog import config
-from watchdog.api import sonarr as api, radarr as radarr_api
+from watchdog.api import sonarr as api, radarr as radarr_api, plex_discover as plex_discover_api
 from watchdog.plex import refresh_path as plex_refresh_path
 
 log = config.logger
@@ -24,6 +24,9 @@ initial_snapshot_taken = False
 last_missing_sweep = 0.0
 last_blocklist_hygiene = 0.0
 last_symlink_reconcile = 0.0
+last_symlink_cleanup = 0.0
+
+_stuck_since: dict = {}
 
 # Releases the watchdog has removed from the queue as "failed" — tracked
 # so we can clean up any blocklist entries Sonarr's own failure handler
@@ -42,7 +45,8 @@ def _normalize_release_title(title):
 # ─── Watchlist sync ───────────────────────────────────────────────────
 
 def sync_watchlist():
-    """Trigger ImportListSync on both Sonarr and Radarr. Never raises."""
+    """Trigger ImportListSync on both Sonarr and Radarr, then periodically
+    diff the Plex watchlist to unmonitor items that were removed."""
     try:
         api("POST", "/api/v3/command", {"name": "ImportListSync"})
     except urllib.error.HTTPError as e:
@@ -60,6 +64,74 @@ def sync_watchlist():
         log.warning(f"Radarr ImportListSync failed: {e}")
     except Exception as e:
         log.warning(f"Radarr ImportListSync failed: {e}")
+
+    _diff_watchlist()
+
+
+def _diff_watchlist():
+    """Compare Plex watchlist against Sonarr/Radarr and unmonitor removed items."""
+    try:
+        data = plex_discover_api("/library/sections/watchlist/all")
+    except Exception as e:
+        log.warning(f"Watchlist diff: failed to fetch Plex watchlist: {e}")
+        return
+
+    if not data:
+        return
+
+    items = (data.get("MediaContainer") or {}).get("Metadata") or []
+    if not items:
+        log.info("Watchlist diff: Plex watchlist is empty — skipping to avoid accidental unmonitor")
+        return
+
+    watchlist_tvdb: set = set()
+    watchlist_tmdb: set = set()
+
+    for item in items:
+        for guid in item.get("Guid") or []:
+            gid = guid.get("id", "")
+            if gid.startswith("tvdb://"):
+                try:
+                    watchlist_tvdb.add(int(gid[7:]))
+                except ValueError:
+                    pass
+            elif gid.startswith("tmdb://"):
+                try:
+                    watchlist_tmdb.add(int(gid[7:]))
+                except ValueError:
+                    pass
+
+    if not watchlist_tvdb and not watchlist_tmdb:
+        log.info("Watchlist diff: no parseable GUIDs — skipping")
+        return
+
+    if watchlist_tvdb:
+        try:
+            all_series = api("GET", "/api/v3/series") or []
+            for s in all_series:
+                tvdb_id = s.get("tvdbId")
+                if tvdb_id and tvdb_id not in watchlist_tvdb:
+                    log.info(f"Watchlist diff: deleting series '{s['title']}' (tvdb:{tvdb_id}) — removed from watchlist")
+                    try:
+                        api("DELETE", f"/api/v3/series/{s['id']}?deleteFiles=true")
+                    except Exception as e:
+                        log.error(f"  Failed to delete series {s['id']}: {e}")
+        except Exception as e:
+            log.warning(f"Watchlist diff: Sonarr series check failed: {e}")
+
+    if watchlist_tmdb and config.radarr_api_key:
+        try:
+            all_movies = radarr_api("GET", "/api/v3/movie") or []
+            for m in all_movies:
+                tmdb_id = m.get("tmdbId")
+                if tmdb_id and tmdb_id not in watchlist_tmdb:
+                    log.info(f"Watchlist diff: deleting movie '{m['title']}' (tmdb:{tmdb_id}) — removed from watchlist")
+                    try:
+                        radarr_api("DELETE", f"/api/v3/movie/{m['id']}?deleteFiles=true")
+                    except Exception as e:
+                        log.error(f"  Failed to delete movie {m['id']}: {e}")
+        except Exception as e:
+            log.warning(f"Watchlist diff: Radarr movie check failed: {e}")
 
 
 # ─── Series snapshot + new series detection ───────────────────────────
@@ -174,8 +246,15 @@ def handle_stuck_imports():
     - "matched to series by ID" (name mismatch)
     - "Unable to determine if file is a sample" (obfuscated filenames)
     - Any other importable warning state
+
+    Items stuck longer than DEAD_DOWNLOAD_GRACE are probed for I/O errors
+    (DMCA'd Usenet articles). Dead downloads are blocklisted and re-searched.
     """
+    global _stuck_since
+
     queue = api("GET", "/api/v3/queue?pageSize=200&includeUnknownSeriesItems=true")
+    active_ids = set()
+
     for item in queue.get("records", []):
         tracked_status = item.get("trackedDownloadStatus", "")
         tracked_state = item.get("trackedDownloadState", "")
@@ -189,6 +268,15 @@ def handle_stuck_imports():
         download_id = item.get("downloadId")
         if not series_id or not download_id:
             continue
+
+        active_ids.add(download_id)
+        now = time.time()
+        first_seen = _stuck_since.setdefault(download_id, now)
+
+        if now - first_seen >= config.DEAD_DOWNLOAD_GRACE:
+            if _probe_dead_download(item):
+                _stuck_since.pop(download_id, None)
+                continue
 
         warning_reasons = []
         for msg in item.get("statusMessages", []):
@@ -233,6 +321,7 @@ def handle_stuck_imports():
                     "files": files,
                 })
                 log.info(f"  Auto-imported {len(files)} file(s): {result.get('status', '?')}")
+                _stuck_since.pop(download_id, None)
                 try:
                     series_info = api("GET", f"/api/v3/series/{series_id}")
                     if series_info and series_info.get("path"):
@@ -244,6 +333,55 @@ def handle_stuck_imports():
 
         except Exception as e:
             log.error(f"  Import error for {title}: {e}")
+
+    _stuck_since = {k: v for k, v in _stuck_since.items() if k in active_ids}
+
+
+def _probe_dead_download(item):
+    """Probe whether a stuck download's files are actually readable.
+    Returns True if the download was dead and has been handled."""
+    download_id = item.get("downloadId")
+    title = item.get("title", "?")[:60]
+    item_id = item["id"]
+    episode_id = item.get("episodeId")
+    output_path = item.get("outputPath", "")
+
+    if not output_path:
+        return False
+
+    probe = subprocess.run(
+        ["docker", "exec", "sonarr", "head", "-c", "1", output_path],
+        capture_output=True, text=True, timeout=15,
+    )
+
+    if probe.returncode == 0:
+        return False
+
+    stderr = probe.stderr.lower()
+    if "i/o error" not in stderr and "no such file" not in stderr and "input/output error" not in stderr:
+        return False
+
+    log.info(f"Dead download detected (I/O error): {title} — blocklisting and re-searching")
+
+    try:
+        api("DELETE",
+            f"/api/v3/queue/{item_id}?removeFromClient=true&blocklist=true&skipRedownload=true")
+    except Exception as e:
+        log.error(f"  Failed to remove dead download {title}: {e}")
+        return False
+
+    if episode_id:
+        try:
+            time.sleep(config.EPISODE_SEARCH_DELAY)
+            api("POST", "/api/v3/command", {
+                "name": "EpisodeSearch",
+                "episodeIds": [episode_id],
+            })
+            log.info(f"  Re-searching episode {episode_id}")
+        except Exception as e:
+            log.error(f"  Re-search failed for episode {episode_id}: {e}")
+
+    return True
 
 
 # ─── Failed downloads ─────────────────────────────────────────────────
@@ -645,3 +783,44 @@ def _list_nzbdav_anime_files():
     except Exception as e:
         log.error(f"  Failed to list NzbDAV files: {e}")
         return []
+
+
+# ─── Stale symlink cleanup ───────────────────────────────────────────
+
+_cleanup_proc = None
+
+
+def cleanup_stale_symlinks():
+    """
+    Periodically remove duplicate (N) folders from completed-symlinks that
+    accumulate when Sonarr retries imports. Runs non-blocking via Popen
+    since deletion over FUSE can take minutes.
+    """
+    global last_symlink_cleanup, _cleanup_proc
+
+    if _cleanup_proc is not None:
+        exit_code = _cleanup_proc.poll()
+        if exit_code is None:
+            return
+        if exit_code == 0:
+            log.info("Stale symlink cleanup: background job finished")
+        else:
+            log.warning(f"Stale symlink cleanup: background job exited with code {exit_code}")
+        _cleanup_proc = None
+
+    now = time.time()
+    if now - last_symlink_cleanup < config.SYMLINK_CLEANUP_INTERVAL:
+        return
+    last_symlink_cleanup = now
+
+    log.info("Stale symlink cleanup: removing duplicate (N) folders from completed-symlinks")
+    try:
+        _cleanup_proc = subprocess.Popen(
+            ["docker", "exec", "sonarr", "find",
+             "/mnt/remote/nzbdav/completed-symlinks/tv/",
+             "-maxdepth", "1", "-type", "d", "-regex", r".* ([0-9]+)",
+             "-exec", "rm", "-rf", "{}", "+"],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        )
+    except Exception as e:
+        log.error(f"Stale symlink cleanup: failed to start: {e}")
