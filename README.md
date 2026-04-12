@@ -1,3 +1,6 @@
+> [!NOTE]
+> I used AI to build this. I don't have time or desire to become an expert in any of the various pieces of this stack, but I want to stream from usenet. 🤷‍♂️
+
 # SlothServ — Self-Hosted Media Server
 
 A self-hosted Usenet streaming setup on macOS using [Plex](https://www.plex.tv/), [NzbDAV](https://github.com/nzbdav/nzbdav), [Sonarr](https://sonarr.tv/), [Radarr](https://radarr.video/), and a custom watchdog daemon, running in [Docker](https://docs.docker.com/get-started/overview/) via [Colima](https://github.com/abiosoft/colima).
