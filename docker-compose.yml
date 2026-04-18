@@ -18,7 +18,7 @@ services:
       - ${PLEX_PORT}:32400
     restart: unless-stopped
     depends_on:
-      nzbdav_rclone:
+      rclone:
         condition: service_started
 
   nzbdav:
@@ -41,9 +41,9 @@ services:
       - ${NZBDAV_PORT}:3000
     restart: unless-stopped
 
-  nzbdav_rclone:
+  rclone:
     image: rclone/rclone:latest
-    container_name: nzbdav_rclone
+    container_name: rclone
     restart: unless-stopped
     environment:
       - PUID=${PUID}
@@ -92,7 +92,7 @@ services:
       - ${SONARR_PORT}:8989
     restart: unless-stopped
     depends_on:
-      nzbdav_rclone:
+      rclone:
         condition: service_started
 
   radarr:
@@ -110,7 +110,7 @@ services:
       - ${RADARR_PORT}:7878
     restart: unless-stopped
     depends_on:
-      nzbdav_rclone:
+      rclone:
         condition: service_started
 
   bazarr:

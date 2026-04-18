@@ -32,16 +32,18 @@ def check_health():
         return
     last_vpn_check = now
 
-    healthy = False
     try:
         result = subprocess.run(
             ["docker", "inspect", "--format", "{{.State.Health.Status}}", "gluetun"],
             capture_output=True, text=True, timeout=10, env=config.BREW_ENV,
         )
-        if result.stdout.strip() == "healthy":
-            healthy = True
     except Exception:
-        pass
+        return
+
+    if result.returncode != 0:
+        return
+
+    healthy = result.stdout.strip() == "healthy"
 
     if healthy:
         if vpn_consecutive_failures > 0:

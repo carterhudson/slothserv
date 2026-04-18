@@ -256,7 +256,7 @@ plex = """  plex:
       - ${PLEX_PORT}:32400
     restart: unless-stopped
     depends_on:
-      nzbdav_rclone:
+      rclone:
         condition: service_started
 """
 
@@ -328,9 +328,9 @@ nzbdav_plain = """  nzbdav:
     restart: unless-stopped
 """
 
-rest = """  nzbdav_rclone:
+rest = """  rclone:
     image: rclone/rclone:latest
-    container_name: nzbdav_rclone
+    container_name: rclone
     restart: unless-stopped
     environment:
       - PUID=${PUID}
@@ -379,7 +379,7 @@ rest = """  nzbdav_rclone:
       - ${SONARR_PORT}:8989
     restart: unless-stopped
     depends_on:
-      nzbdav_rclone:
+      rclone:
         condition: service_started
 
   radarr:
@@ -397,7 +397,7 @@ rest = """  nzbdav_rclone:
       - ${RADARR_PORT}:7878
     restart: unless-stopped
     depends_on:
-      nzbdav_rclone:
+      rclone:
         condition: service_started
 
   seerr:

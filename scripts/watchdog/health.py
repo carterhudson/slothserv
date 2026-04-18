@@ -12,7 +12,7 @@ import urllib.request
 from pathlib import Path
 
 from watchdog import config
-from watchdog.api import sonarr as sonarr_api, radarr as radarr_api, plex_discover as plex_discover_api
+from watchdog.api import sonarr as sonarr_api, radarr as radarr_api, plex_watchlist
 
 log = config.logger
 
@@ -29,8 +29,8 @@ _missing_since: dict = {"sonarr": {}, "radarr": {}}
 # long. Gives ImportListSync time to pick it up on its own.
 IMPORT_LIST_RECREATE_DELAY = 4 * 3600
 
-CRITICAL_CONTAINERS = ["sonarr", "gluetun", "nzbdav_rclone", "sabnzbd"]
-OPTIONAL_CONTAINERS = ["radarr", "plex"]
+CRITICAL_CONTAINERS = ["sonarr", "radarr", "plex", "rclone"]
+OPTIONAL_CONTAINERS = ["gluetun"]
 
 
 # ─── Public entry point ──────────────────────────────────────────────
@@ -63,21 +63,21 @@ def health_check():
 # ─── Container liveness ─────────────────────────────────────────────
 
 def _check_containers():
-    """Verify critical containers are running; restart any that aren't."""
-    all_containers = CRITICAL_CONTAINERS + (
-        OPTIONAL_CONTAINERS if config.radarr_api_key else ["plex"]
-    )
-
-    for name in all_containers:
+    """Verify critical containers are running; restart any that aren't.
+    Containers that don't exist (e.g. optional gluetun when not deployed) are skipped."""
+    for name in CRITICAL_CONTAINERS + OPTIONAL_CONTAINERS:
         try:
             result = subprocess.run(
                 ["docker", "inspect", "--format", "{{.State.Status}}", name],
                 capture_output=True, text=True, timeout=10, env=config.BREW_ENV,
             )
-            status = result.stdout.strip()
         except Exception:
-            status = "unknown"
+            continue
 
+        if result.returncode != 0:
+            continue
+
+        status = result.stdout.strip()
         if status == "running":
             continue
 
@@ -225,15 +225,14 @@ def _verify_import_lists():
         return
 
     try:
-        data = plex_discover_api("/library/sections/watchlist/all")
+        items = plex_watchlist()
     except Exception as e:
         log.debug(f"  Could not fetch Plex Watchlist: {e}")
         return
 
-    if not data:
+    if items is None:
         return
 
-    items = (data.get("MediaContainer") or {}).get("Metadata") or []
     if not items:
         log.info("  Plex Watchlist empty — nothing to verify")
         _missing_since["sonarr"].clear()

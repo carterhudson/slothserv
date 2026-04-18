@@ -12,7 +12,7 @@ import urllib.error
 from datetime import datetime, timezone
 
 from watchdog import config
-from watchdog.api import sonarr as api, radarr as radarr_api, plex_discover as plex_discover_api
+from watchdog.api import sonarr as api, radarr as radarr_api, plex_watchlist
 from watchdog.plex import refresh_path as plex_refresh_path
 
 log = config.logger
@@ -71,15 +71,14 @@ def sync_watchlist():
 def _diff_watchlist():
     """Compare Plex watchlist against Sonarr/Radarr and unmonitor removed items."""
     try:
-        data = plex_discover_api("/library/sections/watchlist/all")
+        items = plex_watchlist()
     except Exception as e:
         log.warning(f"Watchlist diff: failed to fetch Plex watchlist: {e}")
         return
 
-    if not data:
+    if items is None:
         return
 
-    items = (data.get("MediaContainer") or {}).get("Metadata") or []
     if not items:
         log.info("Watchlist diff: Plex watchlist is empty — skipping to avoid accidental unmonitor")
         return
@@ -772,7 +771,7 @@ def _list_nzbdav_anime_files():
     """List .mkv files in NzbDAV's completed-symlinks/tv/ directory."""
     try:
         result = subprocess.run(
-            ["docker", "exec", "nzbdav_rclone", "find",
+            ["docker", "exec", "rclone", "find",
              "/mnt/remote/nzbdav/completed-symlinks/tv/",
              "-maxdepth", "2", "-name", "*.mkv"],
             capture_output=True, text=True, timeout=60,

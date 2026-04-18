@@ -60,17 +60,33 @@ def plex(path):
         return json.loads(r.read())
 
 
-def plex_discover(path):
+def plex_watchlist():
+    """Fetch the full Plex watchlist with external GUIDs, paginating as needed.
+    Returns a list of Metadata dicts (possibly empty), or None if Plex isn't configured.
+    Raises on transport errors so callers can distinguish 'empty watchlist' from 'API down'."""
     if not config.plex_token:
         return None
-    req = urllib.request.Request(
-        f"https://discover.provider.plex.tv{path}",
-        headers={
-            "Accept": "application/json",
-            "X-Plex-Token": config.plex_token,
-            "X-Plex-Client-Identifier": "slothserv-watchdog",
-            "X-Plex-Product": "SlothServ",
-        },
-    )
-    with urllib.request.urlopen(req, timeout=30) as r:
-        return json.loads(r.read())
+    items: list = []
+    start = 0
+    size = 100
+    while True:
+        req = urllib.request.Request(
+            "https://discover.provider.plex.tv/library/sections/watchlist/all?includeGuids=1",
+            headers={
+                "Accept": "application/json",
+                "X-Plex-Token": config.plex_token,
+                "X-Plex-Client-Identifier": "slothserv-watchdog",
+                "X-Plex-Product": "SlothServ",
+                "X-Plex-Container-Start": str(start),
+                "X-Plex-Container-Size": str(size),
+            },
+        )
+        with urllib.request.urlopen(req, timeout=30) as r:
+            mc = (json.loads(r.read()) or {}).get("MediaContainer") or {}
+        batch = mc.get("Metadata") or []
+        items.extend(batch)
+        total = mc.get("totalSize", len(items))
+        if len(batch) < size or len(items) >= total:
+            break
+        start += size
+    return items
