@@ -51,6 +51,8 @@ def _safe(name, fn):
 def main():
     config.setup_logging()
     config.load_api_keys()
+    config.start_time = time.time()
+    (config.LOG_DIR / "watchdog.started").write_text(str(config.start_time))
     config.logger.info("Watchdog started")
 
     init_service_urls()

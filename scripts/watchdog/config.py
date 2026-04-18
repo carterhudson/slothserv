@@ -53,6 +53,7 @@ radarr_api_key = ""
 plex_token = ""
 
 force_health_check = False
+start_time = 0.0
 
 # ─── Logger ───────────────────────────────────────────────────────────
 

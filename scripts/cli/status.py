@@ -11,12 +11,12 @@ Usage:
 import argparse
 import json
 import os
-import socket
 import subprocess
 import sys
 import urllib.request
 import urllib.error
 import xml.etree.ElementTree as ET
+from datetime import datetime, timezone
 from pathlib import Path
 
 BASE_DIR = Path(__file__).resolve().parent.parent.parent
@@ -69,27 +69,62 @@ def http_get(url, api_key=None, timeout=5):
         return json.load(r)
 
 
-def docker_health(container):
-    """Check container state and health via docker inspect."""
+def _format_duration(seconds):
+    """Format a duration in seconds as a human-readable string."""
+    seconds = int(seconds)
+    if seconds < 60:
+        return f"{seconds}s"
+    minutes = seconds // 60
+    if minutes < 60:
+        return f"{minutes}m"
+    hours = minutes // 60
+    remaining_m = minutes % 60
+    if hours < 24:
+        return f"{hours}h {remaining_m}m" if remaining_m else f"{hours}h"
+    days = hours // 24
+    remaining_h = hours % 24
+    return f"{days}d {remaining_h}h" if remaining_h else f"{days}d"
+
+
+def _parse_docker_time(ts):
+    """Parse a Docker ISO 8601 timestamp into seconds of uptime."""
     try:
-        fmt = '{{.State.Status}}|{{if .State.Health}}{{.State.Health.Status}}{{end}}'
+        ts = ts.strip().rstrip("Z")
+        if "." in ts:
+            ts = ts[:ts.index(".")]
+        started = datetime.fromisoformat(ts).replace(tzinfo=timezone.utc)
+        return (datetime.now(timezone.utc) - started).total_seconds()
+    except Exception:
+        return None
+
+
+def docker_health(container):
+    """Check container state, health, and uptime via docker inspect."""
+    try:
+        fmt = '{{.State.Status}}|{{if .State.Health}}{{.State.Health.Status}}{{end}}|{{.State.StartedAt}}'
         result = subprocess.run(
             ["docker", "inspect", "--format", fmt, container],
             capture_output=True, text=True, timeout=5, env=BREW_ENV,
         )
         if result.returncode != 0:
             return {"status": "down"}
-        parts = result.stdout.strip().split("|", 1)
+        parts = result.stdout.strip().split("|", 2)
         state = parts[0]
         health = parts[1] if len(parts) > 1 else ""
+        started_at = parts[2] if len(parts) > 2 else ""
+        uptime_secs = _parse_docker_time(started_at) if started_at else None
+        uptime = _format_duration(uptime_secs) if uptime_secs and uptime_secs > 0 else None
         if state == "running":
+            base = {"status": "up"}
+            if uptime:
+                base["uptime"] = uptime
             if health == "healthy":
-                return {"status": "up"}
+                return base
             elif health == "unhealthy":
-                return {"status": "degraded", "note": "unhealthy"}
+                return {**base, "note": "unhealthy"}
             elif health == "starting":
-                return {"status": "degraded", "note": "starting"}
-            return {"status": "up"}
+                return {**base, "note": "starting"}
+            return base
         elif state == "restarting":
             return {"status": "degraded", "note": "restarting"}
         elif state:
@@ -100,6 +135,8 @@ def docker_health(container):
 
 
 def check_service(name, port, api_key=None, path="/"):
+    docker_info = docker_health(name)
+    uptime = docker_info.get("uptime")
     try:
         url = f"{BASE_URL}:{port}{path}"
         headers = {"Accept": "application/json", "Content-Type": "application/json"}
@@ -107,13 +144,19 @@ def check_service(name, port, api_key=None, path="/"):
             headers["X-Api-Key"] = api_key
         req = urllib.request.Request(url, headers=headers)
         with urllib.request.urlopen(req, timeout=5) as r:
-            return {"status": "up", "code": r.status}
+            result = {"status": "up", "code": r.status}
+            if uptime:
+                result["uptime"] = uptime
+            return result
     except urllib.error.HTTPError as e:
-        return {"status": "up", "code": e.code}
+        result = {"status": "up", "code": e.code}
+        if uptime:
+            result["uptime"] = uptime
+        return result
     except Exception:
         pass
 
-    return docker_health(name)
+    return docker_info
 
 
 SERVICES = [
@@ -178,13 +221,24 @@ def get_watchdog_status():
             capture_output=True, text=True, timeout=5,
         )
         if result.returncode == 0:
-            for line in result.stdout.splitlines():
-                if '"PID"' in line:
-                    return "running"
-            return "loaded"
-        return "not loaded"
+            has_pid = any('"PID"' in line for line in result.stdout.splitlines())
+            if has_pid:
+                uptime = _get_watchdog_uptime()
+                return {"state": "running", "uptime": uptime}
+            return {"state": "loaded", "uptime": None}
+        return {"state": "not loaded", "uptime": None}
     except Exception:
-        return "unknown"
+        return {"state": "unknown", "uptime": None}
+
+
+def _get_watchdog_uptime():
+    try:
+        started_file = BASE_DIR / "logs" / "watchdog.started"
+        start_time = float(started_file.read_text().strip())
+        import time
+        return _format_duration(time.time() - start_time)
+    except Exception:
+        return None
 
 
 def print_dashboard():
@@ -206,11 +260,14 @@ def print_dashboard():
         status = result["status"]
         icon = "OK" if status == "up" else ("WARN" if status == "degraded" else "DOWN")
         note = f" ({result['note']})" if result.get("note") else ""
-        print(f"    {label:12s}  [{icon:4s}]{note}")
+        uptime = f"  up {result['uptime']}" if result.get("uptime") else ""
+        print(f"    {label:12s}  [{icon:4s}]{note}{uptime}")
 
     wd = get_watchdog_status()
-    wd_icon = "OK" if wd == "running" else "WARN" if wd == "loaded" else "DOWN"
-    print(f"    {'Watchdog':12s}  [{wd_icon:4s}] {wd}")
+    wd_state = wd["state"]
+    wd_icon = "OK" if wd_state == "running" else "WARN" if wd_state == "loaded" else "DOWN"
+    wd_uptime = f"  up {wd['uptime']}" if wd.get("uptime") else ""
+    print(f"    {'Watchdog':12s}  [{wd_icon:4s}] {wd_state}{wd_uptime}")
 
     print("\n  Sonarr Library:")
     stats = get_sonarr_stats()
@@ -237,15 +294,13 @@ def print_dashboard():
         print(f"    Queue:     {rstats['queue']} item(s)")
 
     print("\n  Quick Links:")
-    hostname = socket.gethostname()
-    if not hostname.endswith(".local"):
-        hostname += ".local"
-    print(f"    Plex:      http://{hostname}:32400/web")
-    print(f"    Sonarr:    http://{hostname}:8989")
-    print(f"    Radarr:    http://{hostname}:7878")
-    print(f"    Bazarr:    http://{hostname}:6767")
-    print(f"    Tautulli:  http://{hostname}:8181")
-    print(f"    Seerr:     http://{hostname}:5055")
+    print(f"    Plex:      http://plex.home.arpa")
+    print(f"    Sonarr:    http://sonarr.home.arpa")
+    print(f"    Radarr:    http://radarr.home.arpa")
+    print(f"    Bazarr:    http://bazarr.home.arpa")
+    print(f"    Tautulli:  http://tautulli.home.arpa")
+    print(f"    Seerr:     http://seerr.home.arpa")
+    print(f"    NzbDAV:    http://nzbdav.home.arpa")
     print("=" * 55)
 
 
@@ -253,9 +308,10 @@ def print_json():
     resolve_base_url()
     load_api_keys()
 
+    wd = get_watchdog_status()
     data = {
         "services": {},
-        "watchdog": get_watchdog_status(),
+        "watchdog": wd,
         "sonarr": get_sonarr_stats(),
         "radarr": get_radarr_stats(),
     }
