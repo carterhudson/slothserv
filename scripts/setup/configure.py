@@ -98,8 +98,10 @@ def configure_service(service, base_url, api_key, args):
         }],
     })
 
+    penalize_ids = {fd_id, no_id}
+
     if is_sonarr:
-        api(base_url, api_key, "POST", "/api/v3/customformat", {
+        season_pack = api(base_url, api_key, "POST", "/api/v3/customformat", {
             "name": "Season Pack",
             "specifications": [{
                 "name": "Season Pack",
@@ -108,9 +110,8 @@ def configure_service(service, base_url, api_key, args):
                 "negate": False, "required": True,
             }],
         })
+        penalize_ids.add(season_pack["id"])
 
-    fd_id = foreign_dub["id"]
-    no_id = not_orig["id"]
     print(f"  [ok] custom formats (Foreign Dub={fd_id}, Not Original Language={no_id})")
 
     # Apply scores to quality profiles
@@ -118,7 +119,7 @@ def configure_service(service, base_url, api_key, args):
     for p in profiles:
         changed = False
         for item in p.get("formatItems", []):
-            if item.get("format", 0) in (fd_id, no_id):
+            if item.get("format", 0) in penalize_ids:
                 item["score"] = -10000
                 changed = True
         if changed:
