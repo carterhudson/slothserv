@@ -99,6 +99,7 @@ graph TD
 | Database corruption | Silent failures | Hourly health check, auto-repair |
 | Stale import list cache | Watchlist ignored | Auto-recreated after 4h of persistent mismatch |
 | Missing Usenet articles | Corrupt playback, freezes | Detected and flagged for re-download |
+| Plex LAN IP drift | Clients fall back to remote relay after DHCP change | Detected via the default route, `customConnections` rewritten, Plex restarted (deferred during active playback) |
 | Config backups | Manual or forgotten | Daily compressed tarball |
 
 See the [Watchdog wiki page](../../wiki/Watchdog-Daemon) for detailed handler descriptions.
@@ -145,7 +146,9 @@ The exported file contains secrets — treat it like a password manager export.
 2. Create libraries: TV → `/tv`, Anime → `/anime`, Movies → `/movies`
 3. Configure NzbDAV's Usenet provider and Sonarr integration at http://nzbdav.home.arpa
 4. Add the Plex Watchlist import list in Sonarr and Radarr
-5. Set `customConnections` in Plex's `Preferences.xml` to your Mac's LAN IP (so other Plex clients can find the server)
+
+> [!TIP]
+> The watchdog keeps Plex's `customConnections` in sync with your Mac's current LAN IP automatically, so LAN clients don't fall back to Plex's remote relay after a DHCP lease change. You only need to touch this setting if you want to add extra entries (e.g. a hostname or tunnel address).
 
 ### Accessing services by hostname
 
@@ -190,7 +193,8 @@ media-server/
 │   │   ├── nzbdav.py          # Missing article detection
 │   │   ├── backup.py          # Daily config backup (incl. NzbDAV named volume)
 │   │   ├── connectivity.py    # Colima/Docker network failover
-│   │   └── vpn.py             # VPN health check (if enabled)
+│   │   ├── plex_network.py    # Auto-sync Plex customConnections with LAN IP
+│   │   └── vpn.py             # VPN health check (optional; no-op if gluetun isn't deployed)
 │   ├── cli/                   # Manual CLI tools
 │   │   ├── status.py          # mstatus — dashboard
 │   │   ├── episode-search.py  # msearch — targeted search
