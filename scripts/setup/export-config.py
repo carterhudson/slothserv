@@ -115,7 +115,7 @@ def main():
 
     # Movie categories from Radarr
     try:
-        radarr_key = ET.parse(str(base / "config/radarr/config.xml")).find("ApiKey").text
+        radarr_key = (base / "config/api-keys/radarr.key").read_text().strip()
         radarr_url = f"http://{vm_ip}:7878"
         radarr_indexers = api(radarr_url, radarr_key, "/api/v3/indexer")
         if radarr_indexers:

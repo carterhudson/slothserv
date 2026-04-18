@@ -53,8 +53,7 @@ def load_api_keys():
     except Exception:
         pass
     try:
-        tree = ET.parse(str(BASE_DIR / "config/radarr/config.xml"))
-        RADARR_API_KEY = tree.find("ApiKey").text
+        RADARR_API_KEY = (BASE_DIR / "config/api-keys/radarr.key").read_text().strip()
     except Exception:
         pass
 

@@ -23,13 +23,12 @@ MAX_BACKUPS = 7
 
 BACKUP_TARGETS = [
     "config/api-keys/sonarr.key",
-    "config/radarr/config.xml",
-    "config/radarr/radarr.db",
+    "config/api-keys/radarr.key",
+    "config/api-keys/plex.token",
     "config/bazarr/config/config.yaml",
     "config/tautulli/config.ini",
     "config/recyclarr/recyclarr.yml",
     "config/recyclarr/secrets.yml",
-    "config/plex/Library/Application Support/Plex Media Server/Preferences.xml",
     "docker-compose.yml",
 ]
 
@@ -37,6 +36,10 @@ DOCKER_BACKUP_TARGETS = [
     ("nzbdav", "/config/db.sqlite", "config/nzbdav/db.sqlite"),
     ("sonarr", "/config/config.xml", "config/sonarr/config.xml"),
     ("sonarr", "/config/sonarr.db", "config/sonarr/sonarr.db"),
+    ("radarr", "/config/config.xml", "config/radarr/config.xml"),
+    ("radarr", "/config/radarr.db", "config/radarr/radarr.db"),
+    ("plex", "/config/Library/Application Support/Plex Media Server/Preferences.xml",
+     "config/plex/Library/Application Support/Plex Media Server/Preferences.xml"),
 ]
 
 # ─── Module state ─────────────────────────────────────────────────────

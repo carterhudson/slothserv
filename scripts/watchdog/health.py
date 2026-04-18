@@ -1,15 +1,13 @@
 """
-Health checks: container liveness, database integrity, and import list staleness.
+Health checks: container liveness and import list staleness.
+
+Note: there is no DB-integrity repair anymore. Sonarr/Radarr live on
+named Docker volumes (ext4 inside the Colima VM), which eliminated the
+virtiofs + WAL corruption that the repair path used to clean up.
 """
 
-import shutil
-import sqlite3 as _sqlite3
 import subprocess
 import time
-import urllib.error
-import urllib.request
-
-from pathlib import Path
 
 from watchdog import config
 from watchdog.api import sonarr as sonarr_api, radarr as radarr_api, plex_watchlist
@@ -39,8 +37,7 @@ def health_check():
     """
     Hourly health check (or on-demand after a 500 error) that catches:
     1. Containers not running
-    2. Database corruption
-    3. Stale import lists (watchlist items not making it into the library)
+    2. Stale import lists (watchlist items not making it into the library)
     """
     global last_health_check
     now = time.time()
@@ -49,13 +46,9 @@ def health_check():
     last_health_check = now
     config.force_health_check = False
 
-    log.info("Health check: containers, DB integrity, import lists")
+    log.info("Health check: containers, import lists")
 
     _check_containers()
-
-    if config.radarr_api_key:
-        _test_and_repair_db("radarr")
-
     _verify_import_lists()
 
 
@@ -102,113 +95,6 @@ def _check_containers():
                 log.error(f"  Container '{name}' failed to restart")
         except Exception as e:
             log.error(f"  Failed to restart container '{name}': {e}")
-
-
-# ─── DB integrity ────────────────────────────────────────────────────
-
-def _test_and_repair_db(service):
-    """Test both read and write API paths to detect DB corruption."""
-    endpoints = [
-        ("read", "/api/v3/series" if service == "sonarr" else "/api/v3/movie"),
-        ("write", None),
-    ]
-
-    call = sonarr_api if service == "sonarr" else radarr_api
-
-    for test_type, endpoint in endpoints:
-        try:
-            if test_type == "read":
-                call("GET", endpoint)
-            else:
-                cmd = "RefreshSeries" if service == "sonarr" else "RefreshMovie"
-                call("POST", "/api/v3/command", {"name": cmd})
-        except urllib.error.HTTPError as e:
-            if e.code == 500:
-                body = ""
-                try:
-                    body = e.read().decode()
-                except Exception:
-                    pass
-                if "database disk image is malformed" in body:
-                    log.warning(f"  {service} DB corruption detected ({test_type} path) — starting auto-repair")
-                    _repair_database(service)
-                    return
-                else:
-                    log.error(f"  {service} API 500 on {test_type} path (not DB corruption): {body[:200]}")
-        except Exception:
-            pass
-
-
-def _repair_database(service):
-    """Stop container, rebuild DB via SQLite recover/dump, restart container."""
-    db_path = config.BASE_DIR / f"config/{service}/{service}.db"
-    if not db_path.exists():
-        log.error(f"  {service} DB not found at {db_path}")
-        return
-
-    try:
-        subprocess.run(
-            ["docker", "compose", "stop", service],
-            cwd=str(config.BASE_DIR), capture_output=True, timeout=30, env=config.BREW_ENV,
-        )
-        log.info(f"  Stopped {service} container")
-    except Exception as e:
-        log.error(f"  Failed to stop {service}: {e}")
-        return
-
-    bak = db_path.with_suffix(".db.bak")
-    shutil.copy2(str(db_path), str(bak))
-
-    try:
-        conn = _sqlite3.connect(str(db_path))
-        conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
-        conn.close()
-    except Exception:
-        pass
-
-    dump = subprocess.run(
-        ["sqlite3", str(db_path), ".recover"],
-        capture_output=True, text=True, timeout=120,
-    )
-    if dump.returncode != 0 or not dump.stdout.strip():
-        log.warning(f"  .recover failed or empty, falling back to .dump")
-        dump = subprocess.run(
-            ["sqlite3", str(db_path), ".dump"],
-            capture_output=True, text=True, timeout=60,
-        )
-    if dump.returncode != 0:
-        log.error(f"  DB dump failed: {dump.stderr[:200]}")
-        subprocess.run(
-            ["docker", "compose", "start", service],
-            cwd=str(config.BASE_DIR), capture_output=True, timeout=30, env=config.BREW_ENV,
-        )
-        return
-
-    rebuilt = Path(f"/tmp/{service}_rebuilt.db")
-    rebuild = subprocess.run(
-        ["sqlite3", str(rebuilt)],
-        input=dump.stdout, capture_output=True, text=True, timeout=60,
-    )
-    if rebuild.returncode != 0:
-        log.error(f"  DB rebuild failed: {rebuild.stderr[:200]}")
-        rebuilt.unlink(missing_ok=True)
-        subprocess.run(
-            ["docker", "compose", "start", service],
-            cwd=str(config.BASE_DIR), capture_output=True, timeout=30, env=config.BREW_ENV,
-        )
-        return
-
-    shutil.move(str(rebuilt), str(db_path))
-    db_path.with_suffix(".db-wal").unlink(missing_ok=True)
-    db_path.with_suffix(".db-shm").unlink(missing_ok=True)
-    log.info(f"  {service} DB rebuilt successfully")
-
-    subprocess.run(
-        ["docker", "compose", "start", service],
-        cwd=str(config.BASE_DIR), capture_output=True, timeout=30, env=config.BREW_ENV,
-    )
-    time.sleep(15)
-    log.info(f"  {service} container restarted")
 
 
 # ─── Import list staleness ────────────────────────────────────────────

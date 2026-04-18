@@ -208,7 +208,7 @@ else
 fi
 ok "Repository"
 
-mkdir -p "$MEDIA_SERVER_DIR"/{config/{plex,nzbdav,overseerr,radarr,api-keys,gluetun/wireguard},data/media/{tv,anime,movies},mnt,logs}
+mkdir -p "$MEDIA_SERVER_DIR"/{config/{nzbdav,overseerr,api-keys,gluetun/wireguard},data/media/{tv,anime,movies},mnt,logs}
 chmod 700 "$MEDIA_SERVER_DIR/config/api-keys"
 ok "Directories"
 
@@ -248,7 +248,7 @@ plex = """  plex:
       - PLEX_CLAIM=${PLEX_CLAIM}
       - VERSION=docker
     volumes:
-      - ./config/plex:/config
+      - plex_config:/config
       - ${MEDIA_ROOT}/media/tv:/tv
       - ${MEDIA_ROOT}/media/movies:/movies
       - ${MEDIA_ROOT}/media/anime:/anime
@@ -391,7 +391,7 @@ rest = """  rclone:
       - PGID=${PGID}
       - TZ=${TZ}
     volumes:
-      - ./config/radarr:/config
+      - radarr_config:/config
       - ${MEDIA_ROOT}:/data
       - ./mnt:/mnt:rshared
     ports:
@@ -434,6 +434,12 @@ volumes:
   sonarr_config:
     external: true
     name: media-server_sonarr_config
+  radarr_config:
+    external: true
+    name: media-server_radarr_config
+  plex_config:
+    external: true
+    name: media-server_plex_config
   caddy_data:
   caddy_config:
 """
@@ -613,11 +619,12 @@ cd "$MEDIA_SERVER_DIR"
 info "Pulling images..."
 docker compose pull
 
-# Sonarr's config lives in a named volume (media-server_sonarr_config) so
-# it's on Colima's native ext4 instead of virtiofs — avoids the WAL
-# corruption that hits SQLite DBs on the host-mounted filesystem.
-docker volume inspect media-server_sonarr_config &>/dev/null || \
-    docker volume create media-server_sonarr_config >/dev/null
+# Sonarr/Radarr/Plex configs live in named volumes so their SQLite DBs sit on
+# Colima's native ext4 instead of virtiofs — avoids the WAL corruption that
+# hits DBs on the host-mounted filesystem.
+for vol in media-server_sonarr_config media-server_radarr_config media-server_plex_config; do
+    docker volume inspect "$vol" &>/dev/null || docker volume create "$vol" >/dev/null
+done
 
 info "Starting containers..."
 docker compose up -d
@@ -625,10 +632,11 @@ docker compose up -d
 info "Waiting for services to initialize..."
 for _ in $(seq 1 90); do
     docker exec sonarr test -f /config/config.xml &>/dev/null && \
-    [[ -f "$MEDIA_SERVER_DIR/config/radarr/config.xml" ]] && break
+    docker exec radarr test -f /config/config.xml &>/dev/null && break
     sleep 1
 done
 docker exec sonarr test -f /config/config.xml &>/dev/null || { err "Sonarr didn't start."; exit 1; }
+docker exec radarr test -f /config/config.xml &>/dev/null || { err "Radarr didn't start."; exit 1; }
 
 VM_IP=$(colima ls --json 2>/dev/null | python3 -c "
 import json, sys
@@ -641,11 +649,35 @@ for line in sys.stdin:
 [[ -z "$VM_IP" ]] && VM_IP="localhost"
 info "API target: $VM_IP"
 
-docker cp sonarr:/config/config.xml /tmp/sonarr-config.xml
-SONARR_KEY=$(xmllint --xpath '//ApiKey/text()' /tmp/sonarr-config.xml 2>/dev/null)
-rm -f /tmp/sonarr-config.xml
-(umask 077 && printf '%s' "$SONARR_KEY" > "$MEDIA_SERVER_DIR/config/api-keys/sonarr.key")
-RADARR_KEY=$(xmllint --xpath '//ApiKey/text()' "$MEDIA_SERVER_DIR/config/radarr/config.xml" 2>/dev/null)
+for svc in sonarr radarr; do
+    docker cp "${svc}:/config/config.xml" "/tmp/${svc}-config.xml"
+    key=$(xmllint --xpath '//ApiKey/text()' "/tmp/${svc}-config.xml" 2>/dev/null)
+    rm -f "/tmp/${svc}-config.xml"
+    (umask 077 && printf '%s' "$key" > "$MEDIA_SERVER_DIR/config/api-keys/${svc}.key")
+done
+SONARR_KEY=$(cat "$MEDIA_SERVER_DIR/config/api-keys/sonarr.key")
+RADARR_KEY=$(cat "$MEDIA_SERVER_DIR/config/api-keys/radarr.key")
+
+# Plex's claim flow takes a bit — wait for Preferences.xml with a token
+info "Waiting for Plex to claim..."
+PLEX_PREFS_IN="/config/Library/Application Support/Plex Media Server/Preferences.xml"
+for _ in $(seq 1 120); do
+    docker exec plex test -f "$PLEX_PREFS_IN" &>/dev/null && break
+    sleep 1
+done
+if docker exec plex test -f "$PLEX_PREFS_IN" &>/dev/null; then
+    docker cp "plex:$PLEX_PREFS_IN" /tmp/plex-prefs.xml
+    PLEX_TOKEN=$(xmllint --xpath 'string(/Preferences/@PlexOnlineToken)' /tmp/plex-prefs.xml 2>/dev/null)
+    rm -f /tmp/plex-prefs.xml
+    if [[ -n "$PLEX_TOKEN" ]]; then
+        (umask 077 && printf '%s' "$PLEX_TOKEN" > "$MEDIA_SERVER_DIR/config/api-keys/plex.token")
+        ok "Plex token extracted"
+    else
+        warn "Plex Preferences.xml found but no PlexOnlineToken yet — re-claim via Plex UI and re-run bootstrap"
+    fi
+else
+    warn "Plex didn't produce Preferences.xml in 2m — session monitoring will be disabled until token is set"
+fi
 
 for port in 8989 7878; do
     for _ in $(seq 1 30); do
@@ -767,7 +799,7 @@ echo "  2. Create libraries: TV → /tv, Anime → /anime, Movies → /movies"
 echo "  3. Set Anime library: audio=Japanese, subtitles=English (always on)"
 echo "  4. In NzbDAV: configure Sonarr integration (host: http://sonarr:8989)"
 echo "  5. In Sonarr & Radarr: Settings > Import Lists > Plex Watchlist"
-echo "  6. Set customConnections in Plex Preferences.xml to your LAN IP"
+echo "  6. Set customConnections in Plex (Settings > Network) once — watchdog keeps it in sync afterward"
 $USE_VPN && echo -e "\n  VPN active — watchdog auto-rotates servers on failure."
 echo ""
 echo "Commands:  mstatus  mlogs  msearch  mretry  mrestart"

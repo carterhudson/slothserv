@@ -9,7 +9,7 @@ services:
       - PLEX_CLAIM=${PLEX_CLAIM}
       - VERSION=docker
     volumes:
-      - ./config/plex:/config
+      - plex_config:/config
       - ${MEDIA_ROOT}/media/tv:/tv
       - ${MEDIA_ROOT}/media/movies:/movies
       - ${MEDIA_ROOT}/media/anime:/anime
@@ -103,7 +103,7 @@ services:
       - PGID=${PGID}
       - TZ=${TZ}
     volumes:
-      - ./config/radarr:/config
+      - radarr_config:/config
       - ${MEDIA_ROOT}:/data
       - ./mnt:/mnt:rshared
     ports:
@@ -202,5 +202,11 @@ volumes:
   sonarr_config:
     external: true
     name: media-server_sonarr_config
+  radarr_config:
+    external: true
+    name: media-server_radarr_config
+  plex_config:
+    external: true
+    name: media-server_plex_config
   caddy_data:
   caddy_config:

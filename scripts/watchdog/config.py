@@ -11,7 +11,6 @@ to module-level variables are visible everywhere:
 import logging
 import logging.handlers
 import os
-import xml.etree.ElementTree as ET
 from pathlib import Path
 
 # ─── Paths ────────────────────────────────────────────────────────────
@@ -77,14 +76,11 @@ def load_api_keys():
     sonarr_api_key = (BASE_DIR / "config/api-keys/sonarr.key").read_text().strip()
 
     try:
-        radarr_tree = ET.parse(str(BASE_DIR / "config/radarr/config.xml"))
-        radarr_api_key = radarr_tree.find("ApiKey").text
+        radarr_api_key = (BASE_DIR / "config/api-keys/radarr.key").read_text().strip()
     except Exception:
         logger.warning("Could not read Radarr API key — Radarr integration disabled")
 
-    prefs_path = BASE_DIR / "config/plex/Library/Application Support/Plex Media Server/Preferences.xml"
     try:
-        plex_tree = ET.parse(str(prefs_path))
-        plex_token = plex_tree.getroot().get("PlexOnlineToken", "")
+        plex_token = (BASE_DIR / "config/api-keys/plex.token").read_text().strip()
     except Exception:
         logger.warning("Could not read Plex token — session monitoring disabled")

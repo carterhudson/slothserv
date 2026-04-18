@@ -202,7 +202,7 @@ def main():
     base = Path(args.base_dir)
 
     sonarr_key = (base / "config/api-keys/sonarr.key").read_text().strip()
-    radarr_key = ET.parse(str(base / "config/radarr/config.xml")).find("ApiKey").text
+    radarr_key = (base / "config/api-keys/radarr.key").read_text().strip()
 
     sonarr_url = f"http://{args.vm_ip}:8989"
     radarr_url = f"http://{args.vm_ip}:7878"
