@@ -74,8 +74,7 @@ def setup_logging():
 def load_api_keys():
     global sonarr_api_key, radarr_api_key, plex_token
 
-    tree = ET.parse(str(BASE_DIR / "config/sonarr/config.xml"))
-    sonarr_api_key = tree.find("ApiKey").text
+    sonarr_api_key = (BASE_DIR / "config/api-keys/sonarr.key").read_text().strip()
 
     try:
         radarr_tree = ET.parse(str(BASE_DIR / "config/radarr/config.xml"))

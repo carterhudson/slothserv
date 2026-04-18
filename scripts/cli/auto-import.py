@@ -94,9 +94,7 @@ def try_import(item):
 def load_api_key():
     global SONARR_API_KEY
     try:
-        import xml.etree.ElementTree as ET
-        tree = ET.parse(str(BASE_DIR / "config/sonarr/config.xml"))
-        SONARR_API_KEY = tree.find("ApiKey").text
+        SONARR_API_KEY = (BASE_DIR / "config/api-keys/sonarr.key").read_text().strip()
         return True
     except Exception as e:
         print(f"Could not read Sonarr API key: {e}")

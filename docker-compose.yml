@@ -85,7 +85,7 @@ services:
       - PGID=${PGID}
       - TZ=${TZ}
     volumes:
-      - ./config/sonarr:/config
+      - sonarr_config:/config
       - ${MEDIA_ROOT}:/data
       - ./mnt:/mnt:rshared
     ports:
@@ -199,5 +199,8 @@ volumes:
   nzbdav_config:
     external: true
     name: media-server_nzbdav_config
+  sonarr_config:
+    external: true
+    name: media-server_sonarr_config
   caddy_data:
   caddy_config:

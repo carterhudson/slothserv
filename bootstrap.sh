@@ -208,7 +208,8 @@ else
 fi
 ok "Repository"
 
-mkdir -p "$MEDIA_SERVER_DIR"/{config/{plex,nzbdav,overseerr,sonarr,radarr,gluetun/wireguard},data/media/{tv,anime,movies},mnt,logs}
+mkdir -p "$MEDIA_SERVER_DIR"/{config/{plex,nzbdav,overseerr,radarr,api-keys,gluetun/wireguard},data/media/{tv,anime,movies},mnt,logs}
+chmod 700 "$MEDIA_SERVER_DIR/config/api-keys"
 ok "Directories"
 
 DL_CLIENT_HOST="nzbdav"
@@ -372,7 +373,7 @@ rest = """  rclone:
       - PGID=${PGID}
       - TZ=${TZ}
     volumes:
-      - ./config/sonarr:/config
+      - sonarr_config:/config
       - ${MEDIA_ROOT}:/data
       - ./mnt:/mnt:rshared
     ports:
@@ -430,6 +431,9 @@ rest = """  rclone:
 
 volumes_block = """
 volumes:
+  sonarr_config:
+    external: true
+    name: media-server_sonarr_config
   caddy_data:
   caddy_config:
 """
@@ -608,16 +612,23 @@ ok "Colima running"
 cd "$MEDIA_SERVER_DIR"
 info "Pulling images..."
 docker compose pull
+
+# Sonarr's config lives in a named volume (media-server_sonarr_config) so
+# it's on Colima's native ext4 instead of virtiofs — avoids the WAL
+# corruption that hits SQLite DBs on the host-mounted filesystem.
+docker volume inspect media-server_sonarr_config &>/dev/null || \
+    docker volume create media-server_sonarr_config >/dev/null
+
 info "Starting containers..."
 docker compose up -d
 
 info "Waiting for services to initialize..."
 for _ in $(seq 1 90); do
-    [[ -f "$MEDIA_SERVER_DIR/config/sonarr/config.xml" ]] && \
+    docker exec sonarr test -f /config/config.xml &>/dev/null && \
     [[ -f "$MEDIA_SERVER_DIR/config/radarr/config.xml" ]] && break
     sleep 1
 done
-[[ ! -f "$MEDIA_SERVER_DIR/config/sonarr/config.xml" ]] && { err "Sonarr didn't start."; exit 1; }
+docker exec sonarr test -f /config/config.xml &>/dev/null || { err "Sonarr didn't start."; exit 1; }
 
 VM_IP=$(colima ls --json 2>/dev/null | python3 -c "
 import json, sys
@@ -630,7 +641,10 @@ for line in sys.stdin:
 [[ -z "$VM_IP" ]] && VM_IP="localhost"
 info "API target: $VM_IP"
 
-SONARR_KEY=$(xmllint --xpath '//ApiKey/text()' "$MEDIA_SERVER_DIR/config/sonarr/config.xml" 2>/dev/null)
+docker cp sonarr:/config/config.xml /tmp/sonarr-config.xml
+SONARR_KEY=$(xmllint --xpath '//ApiKey/text()' /tmp/sonarr-config.xml 2>/dev/null)
+rm -f /tmp/sonarr-config.xml
+(umask 077 && printf '%s' "$SONARR_KEY" > "$MEDIA_SERVER_DIR/config/api-keys/sonarr.key")
 RADARR_KEY=$(xmllint --xpath '//ApiKey/text()' "$MEDIA_SERVER_DIR/config/radarr/config.xml" 2>/dev/null)
 
 for port in 8989 7878; do

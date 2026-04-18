@@ -41,8 +41,7 @@ def api(method, path, data=None):
 
 def load_api_key():
     global SONARR_API_KEY
-    tree = ET.parse(str(BASE_DIR / "config/sonarr/config.xml"))
-    SONARR_API_KEY = tree.find("ApiKey").text
+    SONARR_API_KEY = (BASE_DIR / "config/api-keys/sonarr.key").read_text().strip()
 
 
 def get_failed_items():

@@ -22,9 +22,8 @@ BACKUP_DIR = config.BASE_DIR / "backups"
 MAX_BACKUPS = 7
 
 BACKUP_TARGETS = [
-    "config/sonarr/config.xml",
+    "config/api-keys/sonarr.key",
     "config/radarr/config.xml",
-    "config/sonarr/sonarr.db",
     "config/radarr/radarr.db",
     "config/bazarr/config/config.yaml",
     "config/tautulli/config.ini",
@@ -36,6 +35,8 @@ BACKUP_TARGETS = [
 
 DOCKER_BACKUP_TARGETS = [
     ("nzbdav", "/config/db.sqlite", "config/nzbdav/db.sqlite"),
+    ("sonarr", "/config/config.xml", "config/sonarr/config.xml"),
+    ("sonarr", "/config/sonarr.db", "config/sonarr/sonarr.db"),
 ]
 
 # ─── Module state ─────────────────────────────────────────────────────

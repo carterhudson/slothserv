@@ -53,7 +53,6 @@ def health_check():
 
     _check_containers()
 
-    _test_and_repair_db("sonarr")
     if config.radarr_api_key:
         _test_and_repair_db("radarr")
 

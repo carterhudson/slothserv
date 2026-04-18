@@ -49,8 +49,7 @@ def resolve_base_url():
 def load_api_keys():
     global SONARR_API_KEY, RADARR_API_KEY
     try:
-        tree = ET.parse(str(BASE_DIR / "config/sonarr/config.xml"))
-        SONARR_API_KEY = tree.find("ApiKey").text
+        SONARR_API_KEY = (BASE_DIR / "config/api-keys/sonarr.key").read_text().strip()
     except Exception:
         pass
     try:

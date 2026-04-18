@@ -89,8 +89,7 @@ def main():
     # Sonarr API key
     sonarr_key = ""
     try:
-        tree = ET.parse(str(base / "config/sonarr/config.xml"))
-        sonarr_key = tree.find("ApiKey").text
+        sonarr_key = (base / "config/api-keys/sonarr.key").read_text().strip()
     except Exception:
         print("Error: Cannot read Sonarr API key", file=sys.stderr)
         sys.exit(1)
