@@ -12,3 +12,6 @@ slothserv-config.json
 
 # OS
 .DS_Store
+
+# Claude Code
+CLAUDE.md
