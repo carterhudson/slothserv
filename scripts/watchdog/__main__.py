@@ -34,6 +34,7 @@ from watchdog.sonarr import (
 from watchdog import radarr
 from watchdog.plex import detect_truncated_episodes
 from watchdog.health import health_check
+from watchdog.plex_network import sync_custom_connections as sync_plex_network
 from watchdog.vpn import check_health as check_vpn_health
 from watchdog.nzbdav import check_article_health
 from watchdog.backup import backup_configs
@@ -66,6 +67,7 @@ def main():
         ("check_vpn_health", check_vpn_health),
         ("sync_watchlist", sync_watchlist),
         ("health_check", health_check),
+        ("sync_plex_network", sync_plex_network),
         ("detect_and_search_new_series", detect_and_search_new_series),
         ("sonarr_stuck_imports", sonarr_stuck_imports),
         ("sonarr_failed_downloads", sonarr_failed_downloads),
